@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>KalidoKit Official - Dance Motion Capture</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    
+    <!-- Basic Three.js -->
+    <script src="https://unpkg.com/three@0.133.0/build/three.js"></script>
+    <!-- GLTF Loader for Three.js -->
+    <script src="https://unpkg.com/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+    <!-- Orbit Controls for Three.js -->
+    <script src="https://unpkg.com/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Kalidokit Kinematic Solver -->
+    <script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1/dist/kalidokit.umd.js"></script>
+    
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        font-family: Arial, sans-serif;
+      }
+      #controls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 15px;
+        border-radius: 8px;
+        z-index: 100;
+      }
+      #controls input, #controls button {
+        margin: 5px 0;
+        display: block;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <h3>Official KalidoKit</h3>
+      <div>
+        <input type="file" id="modelFile" accept=".glb,.gltf" />
+        <button onclick="loadModel()">Load GLB Model</button>
+        <span id="modelStatus"></span>
+      </div>
+      <br>
+      <div>
+        <input type="file" id="motionFile" accept=".json" />
+        <button onclick="loadMotion()">Load Motion Data</button>
+        <span id="motionStatus"></span>
+      </div>
+      <br>
+      <div>
+        <button id="playBtn" onclick="togglePlay()" disabled>Play</button>
+        <span id="frameInfo">Frame: 0 / 0</span>
+      </div>
+      <div>
+        <input type="range" id="progress" min="0" max="100" value="0" oninput="seekTo(this.value)" style="width: 200px;" />
+        <span id="progressText">0%</span>
+      </div>
+    </div>
+
+    <script>
+      //Import Helper Functions from Kalidokit - EXACT from official example
+      const remap = Kalidokit.Utils.remap;
+      const clamp = Kalidokit.Utils.clamp;
+      const lerp = Kalidokit.Vector.lerp;
+
+      /* THREEJS WORLD SETUP - EXACT from official example */
+      let currentModel = null; // GLB model (replaces currentVrm)
+      let boneMappings = {}; // Maps KalidoKit bone names to Three.js bones
+      let skeleton = null;
+
+      // renderer
+      const renderer = new THREE.WebGLRenderer({alpha:true});
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      document.body.appendChild(renderer.domElement);
+
+      // camera
+      const orbitCamera = new THREE.PerspectiveCamera(35,window.innerWidth / window.innerHeight,0.1,1000);
+      orbitCamera.position.set(0.0, 1.4, 0.7);
+
+      // controls
+      const orbitControls = new THREE.OrbitControls(orbitCamera, renderer.domElement);
+      orbitControls.screenSpacePanning = true;
+      orbitControls.target.set(0.0, 1.4, 0.0);
+      orbitControls.update();
+
+      // scene
+      const scene = new THREE.Scene();
+
+      // light
+      const light = new THREE.DirectionalLight(0xffffff);
+      light.position.set(1.0, 1.0, 1.0).normalize();
+      scene.add(light);
+
+      // Main Render Loop - EXACT from official example
+      const clock = new THREE.Clock();
+
+      function animate() {
+        requestAnimationFrame(animate);
+        // Note: VRM has update() for physics, GLB doesn't need it
+        renderer.render(scene, orbitCamera);
+      }
+      animate();
+
+      /* GLB CHARACTER SETUP - Adapted from VRM setup */
+      const loader = new THREE.GLTFLoader();
+      loader.crossOrigin = "anonymous";
+
+      // Setup bone mappings for GLB (replaces VRM's humanoid.getBoneNode)
+      function setupBoneMappings(gltf) {
+        const kalidoKitBoneNames = [
+          'Hips', 'Spine', 'Chest', 'Neck', 'Head',
+          'LeftUpperArm', 'LeftLowerArm', 'LeftHand',
+          'RightUpperArm', 'RightLowerArm', 'RightHand',
+          'LeftUpperLeg', 'LeftLowerLeg', 'LeftFoot',
+          'RightUpperLeg', 'RightLowerLeg', 'RightFoot'
+        ];
+        
+        const boneNameVariations = {
+          'Hips': ['hips', 'Hips', 'mixamorig:Hips', 'root', 'Root', 'pelvis', 'Pelvis'],
+          'Spine': ['spine', 'Spine', 'mixamorig:Spine', 'spine_1', 'Spine_1'],
+          'Chest': ['chest', 'Chest', 'mixamorig:Spine2'],
+          'Neck': ['neck', 'Neck', 'mixamorig:Neck'],
+          'Head': ['head', 'Head', 'mixamorig:Head'],
+          'LeftUpperArm': ['leftUpperArm', 'LeftUpperArm', 'mixamorig:LeftArm', 'leftArm', 'LeftArm'],
+          'LeftLowerArm': ['leftLowerArm', 'LeftLowerArm', 'mixamorig:LeftForeArm', 'leftForeArm', 'LeftForeArm'],
+          'LeftHand': ['leftHand', 'LeftHand', 'mixamorig:LeftHand'],
+          'RightUpperArm': ['rightUpperArm', 'RightUpperArm', 'mixamorig:RightArm', 'rightArm', 'RightArm'],
+          'RightLowerArm': ['rightLowerArm', 'RightLowerArm', 'mixamorig:RightForeArm', 'rightForeArm', 'RightForeArm'],
+          'RightHand': ['rightHand', 'RightHand', 'mixamorig:RightHand'],
+          'LeftUpperLeg': ['leftUpperLeg', 'LeftUpperLeg', 'mixamorig:LeftUpLeg', 'leftUpLeg', 'LeftUpLeg'],
+          'LeftLowerLeg': ['leftLowerLeg', 'LeftLowerLeg', 'mixamorig:LeftLeg', 'leftLeg', 'LeftLeg'],
+          'LeftFoot': ['leftFoot', 'LeftFoot', 'mixamorig:LeftFoot'],
+          'RightUpperLeg': ['rightUpperLeg', 'RightUpperLeg', 'mixamorig:RightUpLeg', 'rightUpLeg', 'RightUpLeg'],
+          'RightLowerLeg': ['rightLowerLeg', 'RightLowerLeg', 'mixamorig:RightLeg', 'rightLeg', 'RightLeg'],
+          'RightFoot': ['rightFoot', 'RightFoot', 'mixamorig:RightFoot']
+        };
+        
+        const allBones = [];
+        gltf.scenes.forEach(scene => {
+          scene.traverse((child) => {
+            if (child.isBone || child.type === 'Bone') {
+              allBones.push(child);
+            }
+            if (child.isSkinnedMesh && child.skeleton) {
+              skeleton = child.skeleton;
+            }
+          });
+        });
+        
+        boneMappings = {};
+        for (const kalidoName of kalidoKitBoneNames) {
+          const variations = boneNameVariations[kalidoName] || [kalidoName];
+          for (const bone of allBones) {
+            const boneNameLower = bone.name.toLowerCase();
+            for (const variation of variations) {
+              if (boneNameLower === variation.toLowerCase() || boneNameLower.includes(variation.toLowerCase())) {
+                boneMappings[kalidoName] = bone;
+                console.log(`✅ Mapped ${kalidoName} -> ${bone.name}`);
+                break;
+              }
+            }
+            if (boneMappings[kalidoName]) break;
+          }
+        }
+      }
+
+      // Get bone node - replaces VRM's currentVrm.humanoid.getBoneNode()
+      function getBoneNode(name) {
+        return boneMappings[name] || null;
+      }
+
+      function loadModel() {
+        const file = document.getElementById('modelFile').files[0];
+        if (!file) {
+          alert('Please select a GLB file');
+          return;
+        }
+        
+        document.getElementById('modelStatus').textContent = 'Loading...';
+        const url = URL.createObjectURL(file);
+        loader.load(
+          url,
+          gltf => {
+            if (currentModel) {
+              scene.remove(currentModel);
+            }
+            
+            currentModel = gltf.scene;
+            setupBoneMappings(gltf);
+            
+            // Scale and position
+            const box = new THREE.Box3().setFromObject(currentModel);
+            const size = box.getSize(new THREE.Vector3());
+            const maxDim = Math.max(size.x, size.y, size.z);
+            const scale = 1.8 / maxDim;
+            currentModel.scale.setScalar(scale);
+            
+            box.setFromObject(currentModel);
+            const minY = box.min.y;
+            currentModel.position.set(0, -minY, 0);
+            
+            // FIX BACKWARDS LOADING: Rotate 180 degrees (as per official example)
+            currentModel.rotation.y = Math.PI;
+            
+            scene.add(currentModel);
+            console.log('✅ Model loaded');
+            document.getElementById('modelStatus').textContent = '✅ Loaded';
+            document.getElementById('modelStatus').style.color = 'green';
+          },
+          progress => {
+            const percent = 100.0 * (progress.loaded / progress.total);
+            document.getElementById('modelStatus').textContent = `Loading... ${percent.toFixed(0)}%`;
+            console.log("Loading model...", percent, "%");
+          },
+          error => {
+            console.error(error);
+            document.getElementById('modelStatus').textContent = '❌ Error';
+            document.getElementById('modelStatus').style.color = 'red';
+          }
+        );
+      }
+
+      // Animate Rotation Helper function - EXACT from official example
+      const rigRotation = (
+        name,
+        rotation = { x: 0, y: 0, z: 0 },
+        dampener = 1,
+        lerpAmount = 0.3
+      ) => {
+        if (!currentModel) {return}
+        const Part = getBoneNode(name); // Replaces VRM's getBoneNode
+        if (!Part) {return}
+        
+        let euler = new THREE.Euler(
+          rotation.x * dampener,
+          rotation.y * dampener,
+          rotation.z * dampener
+        );
+        let quaternion = new THREE.Quaternion().setFromEuler(euler);
+        Part.quaternion.slerp(quaternion, lerpAmount); // interpolate
+      };
+
+      // Animate Position Helper Function - EXACT from official example
+      const rigPosition = (
+        name,
+        position = { x: 0, y: 0, z: 0 },
+        dampener = 1,
+        lerpAmount = 0.3
+      ) => {
+        if (!currentModel) {return}
+        const Part = getBoneNode(name); // Replaces VRM's getBoneNode
+        if (!Part) {return}
+        let vector = new THREE.Vector3(
+          position.x * dampener,
+          position.y * dampener,
+          position.z * dampener
+        );
+        Part.position.lerp(vector, lerpAmount); // interpolate
+      };
+
+      /* VRM Character Animator - EXACT from official example */
+      const animateVRM = (results) => {
+        if (!currentModel) {
+          console.warn('No model loaded yet');
+          return;
+        }   
+        
+        // Take the results and animate character based on its Face, Pose, and Hand Keypoints.
+        let riggedPose;
+
+        // Pose 3D Landmarks are with respect to Hip distance in meters
+        const pose3DLandmarks = results.ea || results.pose3DLandmarks;
+        // Pose 2D landmarks are with respect to videoWidth and videoHeight
+        const pose2DLandmarks = results.poseLandmarks;
+
+        // Animate Pose - EXACT code from official example
+        if (pose2DLandmarks && pose3DLandmarks && pose2DLandmarks.length >= 33 && pose3DLandmarks.length >= 33) {
+          const dummyVideo = { 
+            videoWidth: motionData?.metadata?.width || 720, 
+            videoHeight: motionData?.metadata?.height || 1280 
+          };
+          
+          try {
+            riggedPose = Kalidokit.Pose.solve(pose3DLandmarks, pose2DLandmarks, {
+              runtime: "mediapipe",
+              video: dummyVideo,
+            });
+            
+            if (!riggedPose) {
+              console.warn('KalidoKit returned null pose');
+              return;
+            }
+            
+            // EXACT code from official example
+            rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
+            rigPosition(
+              "Hips",
+              {
+                x: -riggedPose.Hips.position.x, // Reverse direction
+                y: riggedPose.Hips.position.y + 1, // Add a bit of height
+                z: -riggedPose.Hips.position.z // Reverse direction
+              },
+              1,
+              0.07
+            );
+
+            rigRotation("Chest", riggedPose.Spine, 0.25, .3);
+            rigRotation("Spine", riggedPose.Spine, 0.45, .3);
+
+            rigRotation("RightUpperArm", riggedPose.RightUpperArm, 1, .3);
+            rigRotation("RightLowerArm", riggedPose.RightLowerArm, 1, .3);
+            rigRotation("LeftUpperArm", riggedPose.LeftUpperArm, 1, .3);
+            rigRotation("LeftLowerArm", riggedPose.LeftLowerArm, 1, .3);
+
+            rigRotation("LeftUpperLeg", riggedPose.LeftUpperLeg, 1, .3);
+            rigRotation("LeftLowerLeg", riggedPose.LeftLowerLeg, 1, .3);
+            rigRotation("RightUpperLeg", riggedPose.RightUpperLeg, 1, .3);
+            rigRotation("RightLowerLeg", riggedPose.RightLowerLeg, 1, .3);
+          } catch (error) {
+            console.error('Error in KalidoKit.Pose.solve:', error);
+          }
+        } else {
+          console.warn('Invalid landmarks:', {
+            pose2D: pose2DLandmarks?.length,
+            pose3D: pose3DLandmarks?.length
+          });
+        }
+        
+        // Update skeleton if available
+        if (skeleton) {
+          skeleton.update();
+        }
+      };
+
+      // Motion data playback
+      let motionData = null;
+      let currentFrame = 0;
+      let isPlaying = false;
+      let animationFrame = null;
+
+      function loadMotion() {
+        const file = document.getElementById('motionFile').files[0];
+        if (!file) {
+          alert('Please select a JSON file');
+          return;
+        }
+        
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            motionData = JSON.parse(e.target.result);
+            console.log('✅ Motion data loaded:', motionData.frames.length, 'frames');
+            console.log('Metadata:', motionData.metadata);
+            
+            if (!motionData.frames || motionData.frames.length === 0) {
+              alert('No frames found in motion data!');
+              return;
+            }
+            
+            // Check first frame structure
+            const firstFrame = motionData.frames[0];
+            console.log('First frame keys:', Object.keys(firstFrame));
+            console.log('Has landmarks_2d:', !!firstFrame.landmarks_2d);
+            console.log('Has landmarks_3d:', !!firstFrame.landmarks_3d);
+            
+            document.getElementById('playBtn').disabled = false;
+            document.getElementById('progress').max = motionData.frames.length - 1;
+            document.getElementById('progress').value = 0;
+            currentFrame = 0;
+            
+            document.getElementById('motionStatus').textContent = `✅ ${motionData.frames.length} frames loaded`;
+            document.getElementById('motionStatus').style.color = 'green';
+            updateFrameInfo();
+            
+            // Show first frame immediately
+            seekTo(0);
+          } catch (error) {
+            console.error('Error loading motion data:', error);
+            alert('Error loading motion data: ' + error.message);
+          }
+        };
+        reader.onerror = (e) => {
+          console.error('File read error:', e);
+          alert('Error reading file');
+          document.getElementById('motionStatus').textContent = '❌ Error reading file';
+          document.getElementById('motionStatus').style.color = 'red';
+        };
+        reader.readAsText(file);
+      }
+
+      function togglePlay() {
+        if (!motionData) {
+          alert('Please load motion data first!');
+          return;
+        }
+        isPlaying = !isPlaying;
+        document.getElementById('playBtn').textContent = isPlaying ? 'Pause' : 'Play';
+        
+        if (isPlaying) {
+          playAnimation();
+        } else {
+          if (animationFrame) {
+            clearTimeout(animationFrame);
+            animationFrame = null;
+          }
+        }
+      }
+
+      function playAnimation() {
+        if (!isPlaying || !motionData) return;
+        
+        const frame = motionData.frames[currentFrame];
+        if (!frame) {
+          console.warn('No frame at index:', currentFrame);
+          return;
+        }
+        
+        // Use landmarks_2d (which actually contains 3D data) or landmarks_3d
+        const landmarks = frame.landmarks_3d || frame.landmarks_2d;
+        
+        if (landmarks && landmarks.length >= 33) {
+          // Convert to MediaPipe-like format
+          const results = {
+            poseLandmarks: landmarks.map(lm => ({
+              x: lm.x,
+              y: lm.y,
+              z: lm.z || 0,
+              visibility: lm.visibility || 1
+            })),
+            ea: landmarks.map(lm => ({
+              x: lm.x,
+              y: lm.y,
+              z: lm.z || 0,
+              visibility: lm.visibility || 1
+            }))
+          };
+          
+          animateVRM(results);
+        } else {
+          console.warn('Frame', currentFrame, 'has invalid landmarks:', landmarks?.length);
+        }
+        
+        currentFrame++;
+        if (currentFrame >= motionData.frames.length) {
+          currentFrame = 0;
+        }
+        
+        document.getElementById('progress').value = currentFrame;
+        updateFrameInfo();
+        
+        const fps = motionData.metadata?.fps || 30;
+        const frameDelay = 1000 / fps;
+        
+        // Use setTimeout for frame timing instead of requestAnimationFrame
+        animationFrame = setTimeout(() => {
+          if (isPlaying) {
+            playAnimation();
+          }
+        }, frameDelay);
+      }
+      
+      function updateFrameInfo() {
+        if (motionData) {
+          const percent = ((currentFrame + 1) / motionData.frames.length * 100).toFixed(1);
+          document.getElementById('frameInfo').textContent = `Frame: ${currentFrame + 1} / ${motionData.frames.length}`;
+          document.getElementById('progressText').textContent = `${percent}%`;
+        }
+      }
+
+      function seekTo(value) {
+        if (!motionData) return;
+        currentFrame = parseInt(value);
+        const frame = motionData.frames[currentFrame];
+        if (!frame) {
+          console.warn('No frame at index:', currentFrame);
+          return;
+        }
+        
+        // Use landmarks_2d (which actually contains 3D data) or landmarks_3d
+        const landmarks = frame.landmarks_3d || frame.landmarks_2d;
+        
+        if (landmarks && landmarks.length >= 33) {
+          const results = {
+            poseLandmarks: landmarks.map(lm => ({
+              x: lm.x,
+              y: lm.y,
+              z: lm.z || 0,
+              visibility: lm.visibility || 1
+            })),
+            ea: landmarks.map(lm => ({
+              x: lm.x,
+              y: lm.y,
+              z: lm.z || 0,
+              visibility: lm.visibility || 1
+            }))
+          };
+          animateVRM(results);
+        } else {
+          console.warn('Frame', currentFrame, 'has invalid landmarks:', landmarks?.length);
+        }
+        updateFrameInfo();
+      }
+    </script>
+  </body>
+</html>
+

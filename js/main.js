@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { SkeletonRenderer } from './SkeletonRenderer.js';
-import { KalidoAvatarController } from './KalidoAvatarController.js';
+import { OfficialKalidoKitController } from './OfficialKalidoKitController.js';
 
 class MotionCaptureApp {
     constructor() {
@@ -17,7 +17,7 @@ class MotionCaptureApp {
         this.initEventListeners();
         
         this.skeletonRenderer = new SkeletonRenderer(this.scene);
-        this.avatarController = new KalidoAvatarController(this.scene);
+        this.avatarController = new OfficialKalidoKitController(this.scene);
         
         this.animate();
     }
@@ -155,6 +155,67 @@ class MotionCaptureApp {
         
         document.getElementById('loopAnimation').addEventListener('change', (e) => {
             this.loopAnimation = e.target.checked;
+        });
+        
+        // Avatar model selection
+        const avatarModelSelect = document.getElementById('avatarModel');
+        const customModelFile = document.getElementById('customModelFile');
+        const uploadModelBtn = document.getElementById('uploadModelBtn');
+        
+        avatarModelSelect.addEventListener('change', async (e) => {
+            const modelType = e.target.value;
+            
+            if (modelType === 'custom') {
+                customModelFile.style.display = 'block';
+                uploadModelBtn.style.display = 'block';
+            } else {
+                customModelFile.style.display = 'none';
+                uploadModelBtn.style.display = 'none';
+                
+                // Switch to selected model
+                const modelName = modelType === 'basic' ? 'Basic Avatar' : 'Ready Player Me';
+                this.updateStatus(`⏳ Loading ${modelName}...`);
+                console.log(`Switching to ${modelName}...`);
+                
+                try {
+                    await this.avatarController.switchModel(modelType);
+                    this.updateStatus(`✅ ${modelName} loaded successfully! Check browser console (F12) for KalidoKit status.`);
+                    console.log(`✅ ${modelName} switch complete!`);
+                    
+                    // If motion data is already loaded, update the frame to show the new model
+                    if (this.motionData) {
+                        this.updateFrame();
+                    }
+                } catch (error) {
+                    console.error(`❌ Error loading ${modelName}:`, error);
+                    this.updateStatus(`❌ Error loading ${modelName}: ${error.message}. Check browser console for details.`);
+                }
+            }
+        });
+        
+        // Custom model file upload
+        customModelFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                this.updateStatus(`Selected: ${file.name}`);
+            }
+        });
+        
+        uploadModelBtn.addEventListener('click', async () => {
+            const file = customModelFile.files[0];
+            if (!file) {
+                this.updateStatus('❌ Please select a GLB/GLTF file first');
+                return;
+            }
+            
+            this.updateStatus('📤 Loading custom model...');
+            const url = URL.createObjectURL(file);
+            try {
+                await this.avatarController.switchModel('custom', url);
+                this.updateStatus(`✅ Custom model "${file.name}" loaded successfully!`);
+            } catch (error) {
+                this.updateStatus(`❌ Error loading custom model: ${error.message}`);
+            }
         });
         
         // Keyboard shortcuts

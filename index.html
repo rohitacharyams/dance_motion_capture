@@ -67,6 +67,21 @@
             font-size: 14px;
         }
         
+        select {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+        }
+        
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
         button {
             width: 100%;
             padding: 12px;
@@ -205,9 +220,20 @@
             </div>
             
             <div class="control-group">
+                <label for="avatarModel">Avatar Character:</label>
+                <select id="avatarModel" style="width: 100%; padding: 8px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; margin-bottom: 10px;">
+                    <option value="basic">Basic Avatar (Built-in)</option>
+                    <option value="readyplayer">Ready Player Me (Realistic)</option>
+                    <option value="custom">Custom GLB/GLTF Model</option>
+                </select>
+                <input type="file" id="customModelFile" accept=".glb,.gltf" style="display: none;">
+                <button id="uploadModelBtn" style="display: none; margin-top: 5px;">📤 Upload GLB/GLTF Model</button>
+            </div>
+            
+            <div class="control-group">
                 <div class="checkbox-group">
                     <input type="checkbox" id="showAvatar" checked>
-                    <label for="showAvatar" style="margin: 0;">Show KalidoKit Avatar</label>
+                    <label for="showAvatar" style="margin: 0;">Show Avatar</label>
                 </div>
             </div>
             

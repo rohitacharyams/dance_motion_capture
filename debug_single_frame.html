@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Single Frame - Skeleton vs Avatar</title>
+    
+    <!-- Three.js -->
+    <script src="https://unpkg.com/three@0.133.0/build/three.js"></script>
+    <script src="https://unpkg.com/three@0.133.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://unpkg.com/three@0.133.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Kalidokit -->
+    <script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1/dist/kalidokit.umd.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+        }
+        #container {
+            display: flex;
+            height: 100vh;
+        }
+        #left-panel {
+            width: 300px;
+            padding: 20px;
+            background: #2a2a2a;
+            overflow-y: auto;
+        }
+        #canvas-container {
+            flex: 1;
+            position: relative;
+        }
+        #info {
+            background: #333;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        button {
+            padding: 10px;
+            margin: 5px 0;
+            width: 100%;
+            background: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #5aa0f2;
+        }
+        input[type="file"] {
+            width: 100%;
+            margin: 10px 0;
+        }
+        #console {
+            background: #000;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="left-panel">
+            <h2>🔍 Debug Single Frame</h2>
+            
+            <div>
+                <button id="playBtn" onclick="togglePlay()" disabled>▶ Play Animation</button>
+            </div>
+            
+            <div>
+                <label>Frame Number:</label>
+                <input type="number" id="frameNumber" value="3" min="0" max="611" />
+                <button onclick="loadFrame()">Load Frame</button>
+                <span id="frameInfo">0 / 0</span>
+            </div>
+            
+            <div>
+                <input type="range" id="progress" min="0" max="100" value="0" oninput="seekTo(this.value)" style="width: 100%;" />
+                <span id="progressText">0%</span>
+            </div>
+            
+            <div>
+                <label>Speed: <input type="range" id="speedSlider" min="0.1" max="3" step="0.1" value="1" style="width: 150px;" oninput="updateSpeed(this.value)" /></label>
+                <span id="speedValue">1.0x</span>
+            </div>
+            
+            <div>
+                <label>Load Motion Data:</label>
+                <input type="file" id="motionFile" accept=".json" />
+            </div>
+            
+            <div>
+                <label>Load GLB Model:</label>
+                <input type="file" id="modelFile" accept=".glb,.gltf" />
+            </div>
+            
+            <div>
+                <label>
+                    <input type="checkbox" id="showSkeleton" checked onchange="toggleSkeleton()" />
+                    Show Skeleton
+                </label>
+            </div>
+            
+            <div>
+                <label>
+                    <input type="checkbox" id="showAvatar" checked onchange="toggleAvatar()" />
+                    Show Avatar
+                </label>
+            </div>
+            
+            <div>
+                <button onclick="copyBoneNames()">Copy All Bone Names</button>
+            </div>
+            
+            <div id="info">
+                <strong>Status:</strong><br>
+                <span id="status">Ready</span>
+            </div>
+            
+            <div id="boneList" style="background: #333; padding: 10px; margin: 10px 0; border-radius: 5px; font-size: 11px; max-height: 200px; overflow-y: auto; display: none;">
+                <strong>All Bones in Model:</strong><br>
+                <div id="boneListContent"></div>
+            </div>
+            
+            <div id="console"></div>
+        </div>
+        
+        <div id="canvas-container"></div>
+    </div>
+
+    <script>
+        // Global variables
+        let scene, camera, renderer, controls;
+        let skeletonRenderer = null;
+        let avatarController = null;
+        let motionData = null;
+        let currentModel = null;
+        let boneMappings = {};
+        let skeleton = null;
+        let isPlaying = false;
+        let animationFrame = null;
+        let playbackSpeed = 1.0;
+        let currentFrame = 0;
+        
+        // MediaPipe Pose connections
+        const POSE_CONNECTIONS = [
+            [11, 12], [11, 23], [12, 24], [23, 24],
+            [11, 13], [13, 15], [12, 14], [14, 16],
+            [23, 25], [25, 27], [24, 26], [26, 28]
+        ];
+        
+        // Initialize Three.js scene
+        function initScene() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+            
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.5, 5);
+            camera.lookAt(0, 1, 0);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth - 300, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 1, 0);
+            
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 5);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Grid
+            const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
+            scene.add(gridHelper);
+            
+            // Axes
+            const axesHelper = new THREE.AxesHelper(2);
+            scene.add(axesHelper);
+            
+            // Create skeleton renderer
+            createSkeletonRenderer();
+            
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = (window.innerWidth - 300) / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth - 300, window.innerHeight);
+            });
+        }
+        
+        // Create skeleton renderer
+        function createSkeletonRenderer() {
+            skeletonRenderer = {
+                joints: [],
+                bones: [],
+                visible: true,
+                offset: new THREE.Vector3(-1.5, 0, 0)
+            };
+            
+            // Create joints
+            const jointGeometry = new THREE.SphereGeometry(0.05, 16, 16);
+            const jointMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff88, emissive: 0x00ff88 });
+            
+            for (let i = 0; i < 33; i++) {
+                const joint = new THREE.Mesh(jointGeometry, jointMaterial);
+                joint.visible = false;
+                scene.add(joint);
+                skeletonRenderer.joints.push(joint);
+            }
+            
+            // Create bones
+            const boneMaterial = new THREE.MeshStandardMaterial({ color: 0x00ffff });
+            POSE_CONNECTIONS.forEach(() => {
+                const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1, 8), boneMaterial);
+                bone.visible = false;
+                scene.add(bone);
+                skeletonRenderer.bones.push(bone);
+            });
+        }
+        
+        // Update skeleton
+        function updateSkeleton(landmarks) {
+            if (!skeletonRenderer || !landmarks) return;
+            
+            // Update joints
+            landmarks.forEach((lm, i) => {
+                if (i < skeletonRenderer.joints.length && lm.visibility > 0.5) {
+                    const joint = skeletonRenderer.joints[i];
+                    joint.position.set(
+                        lm.x + skeletonRenderer.offset.x,
+                        -lm.y + skeletonRenderer.offset.y,  // Flip Y
+                        -lm.z + skeletonRenderer.offset.z   // Flip Z
+                    );
+                    joint.visible = skeletonRenderer.visible;
+                }
+            });
+            
+            // Update bones
+            POSE_CONNECTIONS.forEach(([i1, i2], idx) => {
+                if (idx < skeletonRenderer.bones.length) {
+                    const bone = skeletonRenderer.bones[idx];
+                    const j1 = skeletonRenderer.joints[i1];
+                    const j2 = skeletonRenderer.joints[i2];
+                    
+                    if (j1.visible && j2.visible) {
+                        const mid = new THREE.Vector3().addVectors(j1.position, j2.position).multiplyScalar(0.5);
+                        bone.position.copy(mid);
+                        bone.lookAt(j2.position);
+                        bone.scale.y = j1.position.distanceTo(j2.position);
+                        bone.visible = skeletonRenderer.visible;
+                    } else {
+                        bone.visible = false;
+                    }
+                }
+            });
+        }
+        
+        // Load motion data
+        document.getElementById('motionFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+        reader.onload = (event) => {
+          motionData = JSON.parse(event.target.result);
+          log(`✅ Motion data loaded: ${motionData.frames.length} frames`);
+          document.getElementById('status').textContent = `Loaded ${motionData.frames.length} frames`;
+          document.getElementById('playBtn').disabled = false;
+          document.getElementById('frameNumber').max = motionData.frames.length - 1;
+          updateFrameInfo();
+          loadFrame();
+        };
+            reader.readAsText(file);
+        });
+        
+        // Load GLB model
+        document.getElementById('modelFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const loader = new THREE.GLTFLoader();
+            const url = URL.createObjectURL(file);
+            
+            loader.load(url, (gltf) => {
+                if (currentModel) {
+                    scene.remove(currentModel);
+                }
+                
+                currentModel = gltf.scene;
+                setupBoneMappings(gltf);
+                
+                // Scale and position
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 1.8 / maxDim;
+                currentModel.scale.setScalar(scale);
+                
+                box.setFromObject(currentModel);
+                const minY = box.min.y;
+                currentModel.position.set(1.5, -minY, 0);
+                currentModel.rotation.y = Math.PI; // Rotate 180deg
+                
+                scene.add(currentModel);
+                log(`✅ Model loaded`);
+                document.getElementById('status').textContent = 'Model loaded';
+                
+                if (motionData) {
+                    loadFrame();
+                }
+            });
+        });
+        
+        // Setup bone mappings
+        function setupBoneMappings(gltf) {
+            const kalidoKitBoneNames = [
+                'Hips', 'Spine', 'Chest', 'Neck', 'Head',
+                'LeftUpperArm', 'LeftLowerArm', 'LeftHand',
+                'RightUpperArm', 'RightLowerArm', 'RightHand',
+                'LeftUpperLeg', 'LeftLowerLeg', 'LeftFoot',
+                'RightUpperLeg', 'RightLowerLeg', 'RightFoot'
+            ];
+            
+            const boneNameVariations = {
+                'Hips': ['hips', 'Hips', 'mixamorig:Hips', 'root', 'Root', 'pelvis', 'Pelvis', 'hip', 'Hip'],
+                'Spine': ['spine', 'Spine', 'mixamorig:Spine', 'spine_1', 'Spine_1', 'spine1', 'Spine1'],
+                'Chest': ['chest', 'Chest', 'mixamorig:Spine2', 'spine_2', 'Spine_2', 'spine2', 'Spine2'],
+                'Neck': ['neck', 'Neck', 'mixamorig:Neck'],
+                'Head': ['head', 'Head', 'mixamorig:Head'],
+                'LeftUpperArm': ['leftupperarm', 'LeftUpperArm', 'left_upper_arm', 'Left_Upper_Arm', 'mixamorig:LeftArm', 'leftarm', 'LeftArm', 'left_arm', 'Left_Arm', 'l_upperarm', 'L_UpperArm', 'upperarm_l', 'UpperArm_L', 'left_shoulder', 'Left_shoulder'],
+                'LeftLowerArm': ['leftlowerarm', 'LeftLowerArm', 'left_lower_arm', 'Left_Lower_Arm', 'mixamorig:LeftForeArm', 'leftforearm', 'LeftForeArm', 'left_forearm', 'Left_ForeArm', 'l_forearm', 'L_ForeArm', 'lowerarm_l', 'LowerArm_L', 'left_elbow', 'Left_elbow'],
+                'LeftHand': ['lefthand', 'LeftHand', 'left_hand', 'Left_Hand', 'mixamorig:LeftHand', 'l_hand', 'L_Hand', 'hand_l', 'Hand_L', 'left_wrist', 'Left_wrist'],
+                'RightUpperArm': ['rightupperarm', 'RightUpperArm', 'right_upper_arm', 'Right_Upper_Arm', 'mixamorig:RightArm', 'rightarm', 'RightArm', 'right_arm', 'Right_Arm', 'r_upperarm', 'R_UpperArm', 'upperarm_r', 'UpperArm_R', 'right_shoulder', 'Right_shoulder'],
+                'RightLowerArm': ['rightlowerarm', 'RightLowerArm', 'right_lower_arm', 'Right_Lower_Arm', 'mixamorig:RightForeArm', 'rightforearm', 'RightForeArm', 'right_forearm', 'Right_ForeArm', 'r_forearm', 'R_ForeArm', 'lowerarm_r', 'LowerArm_R', 'right_elbow', 'Right_elbow'],
+                'RightHand': ['righthand', 'RightHand', 'right_hand', 'Right_Hand', 'mixamorig:RightHand', 'r_hand', 'R_Hand', 'hand_r', 'Hand_R', 'right_wrist', 'Right_wrist'],
+                // YOUR MODEL USES: Left_leg (upper leg), Left_knee (lower leg), Left_ankle (foot)
+                'LeftUpperLeg': ['leftupperleg', 'LeftUpperLeg', 'left_upper_leg', 'Left_Upper_Leg', 'mixamorig:LeftUpLeg', 'leftupleg', 'LeftUpLeg', 'left_upleg', 'Left_UpLeg', 'l_upperleg', 'L_UpperLeg', 'thigh_l', 'Thigh_L', 'thighl', 'ThighL', 'left_leg', 'Left_leg'],
+                'LeftLowerLeg': ['leftlowerleg', 'LeftLowerLeg', 'left_lower_leg', 'Left_Lower_Leg', 'mixamorig:LeftLeg', 'leftleg', 'LeftLeg', 'left_leg', 'Left_Leg', 'l_lowerleg', 'L_LowerLeg', 'calf_l', 'Calf_L', 'calfl', 'CalfL', 'left_knee', 'Left_knee'],
+                'LeftFoot': ['leftfoot', 'LeftFoot', 'left_foot', 'Left_Foot', 'mixamorig:LeftFoot', 'l_foot', 'L_Foot', 'foot_l', 'Foot_L', 'left_ankle', 'Left_ankle'],
+                // YOUR MODEL USES: Right_leg (upper leg), Right_knee (lower leg), Right_ankle (foot)
+                'RightUpperLeg': ['rightupperleg', 'RightUpperLeg', 'right_upper_leg', 'Right_Upper_Leg', 'mixamorig:RightUpLeg', 'rightupleg', 'RightUpLeg', 'right_upleg', 'Right_UpLeg', 'r_upperleg', 'R_UpperLeg', 'thigh_r', 'Thigh_R', 'thighr', 'ThighR', 'right_leg', 'Right_leg'],
+                'RightLowerLeg': ['rightlowerleg', 'RightLowerLeg', 'right_lower_leg', 'Right_Lower_Leg', 'mixamorig:RightLeg', 'rightleg', 'RightLeg', 'right_leg', 'Right_Leg', 'r_lowerleg', 'R_LowerLeg', 'calf_r', 'Calf_R', 'calfr', 'CalfR', 'right_knee', 'Right_knee'],
+                'RightFoot': ['rightfoot', 'RightFoot', 'right_foot', 'Right_Foot', 'mixamorig:RightFoot', 'r_foot', 'R_Foot', 'foot_r', 'Foot_R', 'right_ankle', 'Right_ankle']
+            };
+            
+            const allBones = [];
+            gltf.scenes.forEach(scene => {
+                scene.traverse((child) => {
+                    if (child.isBone || child.type === 'Bone') {
+                        allBones.push(child);
+                    }
+                    if (child.isSkinnedMesh && child.skeleton) {
+                        skeleton = child.skeleton;
+                        // Also add skeleton bones
+                        if (skeleton.bones) {
+                            skeleton.bones.forEach(bone => {
+                                if (!allBones.find(b => b === bone)) {
+                                    allBones.push(bone);
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+            
+            // Also check if skeleton has bones directly
+            if (skeleton && skeleton.bones) {
+                skeleton.bones.forEach(bone => {
+                    if (!allBones.find(b => b === bone)) {
+                        allBones.push(bone);
+                    }
+                });
+            }
+            
+            log(`\n=== ALL BONES IN MODEL (${allBones.length} total) ===`);
+            const boneListDiv = document.getElementById('boneList');
+            const boneListContent = document.getElementById('boneListContent');
+            boneListDiv.style.display = 'block';
+            boneListContent.innerHTML = '';
+            
+            allBones.forEach((bone, idx) => {
+                const boneInfo = `${idx}: ${bone.name} (type: ${bone.type})`;
+                log(boneInfo);
+                const boneItem = document.createElement('div');
+                boneItem.textContent = boneInfo;
+                boneItem.style.padding = '2px 0';
+                boneListContent.appendChild(boneItem);
+            });
+            
+            boneMappings = {};
+            log(`\n=== BONE MAPPING ATTEMPTS ===`);
+            
+            // DIRECT MAPPINGS for this specific model's bone names
+            const directMappings = {
+                'Left_leg': 'LeftUpperLeg',
+                'Left_knee': 'LeftLowerLeg',
+                'Left_ankle': 'LeftFoot',
+                'Right_leg': 'RightUpperLeg',
+                'Right_knee': 'RightLowerLeg',
+                'Right_ankle': 'RightFoot',
+                'Left_elbow': 'LeftLowerArm',
+                'Left_wrist': 'LeftHand',
+                'Right_elbow': 'RightLowerArm',
+                'Right_wrist': 'RightHand'
+            };
+            
+            // Apply direct mappings first
+            for (const bone of allBones) {
+                if (directMappings[bone.name]) {
+                    const kalidoName = directMappings[bone.name];
+                    if (!boneMappings[kalidoName]) {
+                        boneMappings[kalidoName] = bone;
+                        log(`✅ Mapped ${kalidoName} -> ${bone.name} (direct mapping)`);
+                    }
+                }
+            }
+            
+            // Then do standard matching for remaining bones
+            for (const kalidoName of kalidoKitBoneNames) {
+                // Skip if already mapped
+                if (boneMappings[kalidoName]) continue;
+                
+                const variations = boneNameVariations[kalidoName] || [kalidoName];
+                let found = false;
+                
+                // Try exact match first (normalized)
+                for (const bone of allBones) {
+                    // Skip if this bone is already mapped
+                    const alreadyMapped = Object.values(boneMappings).includes(bone);
+                    if (alreadyMapped) continue;
+                    
+                    const boneNameNormalized = bone.name.toLowerCase().replace(/[_\s-]/g, '');
+                    for (const variation of variations) {
+                        const varNormalized = variation.toLowerCase().replace(/[_\s-]/g, '');
+                        if (boneNameNormalized === varNormalized) {
+                            boneMappings[kalidoName] = bone;
+                            log(`✅ Mapped ${kalidoName} -> ${bone.name} (exact match)`);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+                
+                // Try case-insensitive exact match with underscores
+                if (!found) {
+                    for (const bone of allBones) {
+                        // Skip if this bone is already mapped
+                        const alreadyMapped = Object.values(boneMappings).includes(bone);
+                        if (alreadyMapped) continue;
+                        
+                        const boneNameLower = bone.name.toLowerCase();
+                        for (const variation of variations) {
+                            const varLower = variation.toLowerCase();
+                            if (boneNameLower === varLower) {
+                                boneMappings[kalidoName] = bone;
+                                log(`✅ Mapped ${kalidoName} -> ${bone.name} (exact match)`);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) break;
+                    }
+                }
+                
+                // Try partial match (bone name contains variation)
+                if (!found) {
+                    for (const bone of allBones) {
+                        // Skip if this bone is already mapped
+                        const alreadyMapped = Object.values(boneMappings).includes(bone);
+                        if (alreadyMapped) continue;
+                        
+                        const boneNameLower = bone.name.toLowerCase();
+                        for (const variation of variations) {
+                            const varLower = variation.toLowerCase();
+                            // Check if bone name contains the variation (but not vice versa to avoid false matches)
+                            if (boneNameLower.includes(varLower) && varLower.length >= 4) {
+                                boneMappings[kalidoName] = bone;
+                                log(`✅ Mapped ${kalidoName} -> ${bone.name} (partial match)`);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) break;
+                    }
+                }
+                
+                if (!found) {
+                    log(`❌ NOT FOUND: ${kalidoName}`);
+                }
+            }
+            
+            log(`\n=== MAPPING SUMMARY ===`);
+            log(`Mapped: ${Object.keys(boneMappings).length} / ${kalidoKitBoneNames.length} bones`);
+            log(`Missing: ${kalidoKitBoneNames.filter(n => !boneMappings[n]).join(', ')}`);
+        }
+        
+        // Get bone node
+        function getBoneNode(name) {
+            return boneMappings[name] || null;
+        }
+        
+        // Rig rotation (official KalidoKit pattern)
+        function rigRotation(name, rotation = { x: 0, y: 0, z: 0 }, dampener = 1, lerpAmount = 0.3) {
+            if (!currentModel) return;
+            const Part = getBoneNode(name);
+            if (!Part) return;
+            
+            let euler = new THREE.Euler(
+                rotation.x * dampener,
+                rotation.y * dampener,
+                rotation.z * dampener
+            );
+            let quaternion = new THREE.Quaternion().setFromEuler(euler);
+            Part.quaternion.slerp(quaternion, lerpAmount);
+        }
+        
+        // Rig position (official KalidoKit pattern)
+        function rigPosition(name, position = { x: 0, y: 0, z: 0 }, dampener = 1, lerpAmount = 0.3) {
+            if (!currentModel) return;
+            const Part = getBoneNode(name);
+            if (!Part) return;
+            
+            let vector = new THREE.Vector3(
+                position.x * dampener,
+                position.y * dampener,
+                position.z * dampener
+            );
+            Part.position.lerp(vector, lerpAmount);
+        }
+        
+        // Animate avatar (official KalidoKit pattern)
+        function animateAvatar(landmarks) {
+            if (!currentModel || !landmarks) return;
+            
+            const poseLandmarks = landmarks.map(lm => ({
+                x: lm.x, y: lm.y, z: lm.z || 0, visibility: lm.visibility || 1
+            }));
+            
+            const pose3DLandmarks = landmarks.map(lm => ({
+                x: lm.x, y: lm.y, z: lm.z || 0, visibility: lm.visibility || 1
+            }));
+            
+            if (poseLandmarks.length >= 33 && pose3DLandmarks.length >= 33) {
+                const dummyVideo = { 
+                    videoWidth: motionData?.metadata?.width || 720, 
+                    videoHeight: motionData?.metadata?.height || 1280 
+                };
+                
+                try {
+                    const riggedPose = Kalidokit.Pose.solve(pose3DLandmarks, poseLandmarks, {
+                        runtime: "mediapipe",
+                        video: dummyVideo,
+                    });
+                    
+                    if (!riggedPose) {
+                        if (!isPlaying) log('❌ KalidoKit returned null pose');
+                        return;
+                    }
+                    
+                    // Log key rotations (only for single frame mode, not during animation)
+                    if (!isPlaying) {
+                      log('\n=== KALIDOKIT OUTPUT ===');
+                      log(`Hips rotation: x=${riggedPose.Hips.rotation.x.toFixed(4)}, y=${riggedPose.Hips.rotation.y.toFixed(4)}, z=${riggedPose.Hips.rotation.z.toFixed(4)}`);
+                      log(`RightUpperLeg: x=${riggedPose.RightUpperLeg.x.toFixed(4)}, y=${riggedPose.RightUpperLeg.y.toFixed(4)}, z=${riggedPose.RightUpperLeg.z.toFixed(4)}`);
+                      log(`LeftUpperLeg: x=${riggedPose.LeftUpperLeg.x.toFixed(4)}, y=${riggedPose.LeftUpperLeg.y.toFixed(4)}, z=${riggedPose.LeftUpperLeg.z.toFixed(4)}`);
+                      log(`RightUpperArm: x=${riggedPose.RightUpperArm.x.toFixed(4)}, y=${riggedPose.RightUpperArm.y.toFixed(4)}, z=${riggedPose.RightUpperArm.z.toFixed(4)}`);
+                      log(`LeftUpperArm: x=${riggedPose.LeftUpperArm.x.toFixed(4)}, y=${riggedPose.LeftUpperArm.y.toFixed(4)}, z=${riggedPose.LeftUpperArm.z.toFixed(4)}`);
+                    }
+                    
+                    // Log which bones will be rotated (only for single frame mode)
+                    if (!isPlaying) {
+                      log('\n=== APPLYING ROTATIONS ===');
+                    }
+                    
+                    // Apply rotations (EXACT official pattern)
+                    if (boneMappings["Hips"]) {
+                        rigRotation("Hips", riggedPose.Hips.rotation, 0.7);
+                        if (!isPlaying) log(`✅ Applied Hips rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ Hips bone not found!`);
+                    }
+                    
+                    if (boneMappings["Hips"]) {
+                        rigPosition("Hips", {
+                            x: -riggedPose.Hips.position.x,
+                            y: riggedPose.Hips.position.y + 1,
+                            z: -riggedPose.Hips.position.z
+                        }, 1, 0.07);
+                    }
+                    
+                    if (boneMappings["Chest"]) rigRotation("Chest", riggedPose.Spine, 0.25, 0.3);
+                    if (boneMappings["Spine"]) rigRotation("Spine", riggedPose.Spine, 0.45, 0.3);
+                    
+                    if (boneMappings["RightUpperArm"]) {
+                        rigRotation("RightUpperArm", riggedPose.RightUpperArm, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied RightUpperArm rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ RightUpperArm bone not found!`);
+                    }
+                    
+                    if (boneMappings["RightLowerArm"]) rigRotation("RightLowerArm", riggedPose.RightLowerArm, 1, 0.3);
+                    if (boneMappings["LeftUpperArm"]) {
+                        rigRotation("LeftUpperArm", riggedPose.LeftUpperArm, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied LeftUpperArm rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ LeftUpperArm bone not found!`);
+                    }
+                    if (boneMappings["LeftLowerArm"]) rigRotation("LeftLowerArm", riggedPose.LeftLowerArm, 1, 0.3);
+                    
+                    if (boneMappings["LeftUpperLeg"]) {
+                        rigRotation("LeftUpperLeg", riggedPose.LeftUpperLeg, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied LeftUpperLeg rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ LeftUpperLeg bone not found!`);
+                    }
+                    if (boneMappings["LeftLowerLeg"]) {
+                        rigRotation("LeftLowerLeg", riggedPose.LeftLowerLeg, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied LeftLowerLeg rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ LeftLowerLeg bone not found!`);
+                    }
+                    if (boneMappings["RightUpperLeg"]) {
+                        rigRotation("RightUpperLeg", riggedPose.RightUpperLeg, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied RightUpperLeg rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ RightUpperLeg bone not found!`);
+                    }
+                    if (boneMappings["RightLowerLeg"]) {
+                        rigRotation("RightLowerLeg", riggedPose.RightLowerLeg, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied RightLowerLeg rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ RightLowerLeg bone not found!`);
+                    }
+                    
+                    if (skeleton) {
+                        skeleton.update();
+                    }
+                } catch (error) {
+                    log(`❌ Error: ${error.message}`);
+                    console.error(error);
+                }
+            }
+        }
+        
+        // Load frame
+      function loadFrame() {
+        if (!motionData) {
+          log('❌ No motion data loaded');
+          return;
+        }
+        
+        const frameNum = parseInt(document.getElementById('frameNumber').value);
+        currentFrame = Math.max(0, Math.min(frameNum, motionData.frames.length - 1));
+        document.getElementById('frameNumber').value = currentFrame;
+        
+        const frame = motionData.frames[currentFrame];
+        
+        if (!frame) {
+          log(`❌ Frame ${currentFrame} not found`);
+          return;
+        }
+        
+        const landmarks = frame.landmarks_3d || frame.landmarks_2d;
+        
+        if (!landmarks || landmarks.length < 33) {
+          log(`❌ Invalid landmarks in frame ${currentFrame}`);
+          return;
+        }
+        
+        // Only log details when not playing (single frame mode)
+        if (!isPlaying) {
+          log(`\n=== FRAME ${currentFrame} ===`);
+          log(`Landmarks count: ${landmarks.length}`);
+          
+          // Log key landmark positions
+          log('\n=== KEY LANDMARKS ===');
+          log(`Right Hip (23): x=${landmarks[23].x.toFixed(4)}, y=${landmarks[23].y.toFixed(4)}, z=${landmarks[23].z.toFixed(4)}`);
+          log(`Right Knee (25): x=${landmarks[25].x.toFixed(4)}, y=${landmarks[25].y.toFixed(4)}, z=${landmarks[25].z.toFixed(4)}`);
+          log(`Right Ankle (27): x=${landmarks[27].x.toFixed(4)}, y=${landmarks[27].y.toFixed(4)}, z=${landmarks[27].z.toFixed(4)}`);
+          log(`Left Hip (24): x=${landmarks[24].x.toFixed(4)}, y=${landmarks[24].y.toFixed(4)}, z=${landmarks[24].z.toFixed(4)}`);
+          log(`Left Knee (26): x=${landmarks[26].x.toFixed(4)}, y=${landmarks[26].y.toFixed(4)}, z=${landmarks[26].z.toFixed(4)}`);
+          log(`Left Ankle (28): x=${landmarks[28].x.toFixed(4)}, y=${landmarks[28].y.toFixed(4)}, z=${landmarks[28].z.toFixed(4)}`);
+        }
+        
+        // Update skeleton
+        updateSkeleton(landmarks);
+        
+        // Update avatar
+        animateAvatar(landmarks);
+        
+        // Update UI
+        updateFrameInfo();
+        document.getElementById('status').textContent = `Frame ${currentFrame} loaded`;
+      }
+      
+      function updateFrameInfo() {
+        if (motionData) {
+          const percent = ((currentFrame + 1) / motionData.frames.length * 100).toFixed(1);
+          document.getElementById('frameInfo').textContent = `${currentFrame + 1} / ${motionData.frames.length}`;
+          document.getElementById('progressText').textContent = `${percent}%`;
+          document.getElementById('progress').value = currentFrame;
+          document.getElementById('progress').max = motionData.frames.length - 1;
+        }
+      }
+      
+      function updateSpeed(value) {
+        playbackSpeed = parseFloat(value);
+        document.getElementById('speedValue').textContent = playbackSpeed.toFixed(1) + 'x';
+      }
+      
+      // Animation playback functions
+      function togglePlay() {
+        if (!motionData) {
+          alert('Please load motion data first!');
+          return;
+        }
+        if (!currentModel) {
+          alert('Please load a model first!');
+          return;
+        }
+        
+        isPlaying = !isPlaying;
+        document.getElementById('playBtn').textContent = isPlaying ? '⏸ Pause' : '▶ Play Animation';
+        
+        if (isPlaying) {
+          document.getElementById('status').textContent = 'Playing animation...';
+          playAnimation();
+        } else {
+          if (animationFrame) {
+            clearTimeout(animationFrame);
+            animationFrame = null;
+          }
+          document.getElementById('status').textContent = `Paused at frame ${currentFrame + 1}`;
+        }
+      }
+      
+      function playAnimation() {
+        if (!isPlaying || !motionData) return;
+        
+        const frame = motionData.frames[currentFrame];
+        if (!frame) {
+          isPlaying = false;
+          document.getElementById('playBtn').textContent = '▶ Play Animation';
+          return;
+        }
+        
+        const landmarks = frame.landmarks_3d || frame.landmarks_2d;
+        
+        if (landmarks && landmarks.length >= 33) {
+          // Update skeleton
+          updateSkeleton(landmarks);
+          
+          // Update avatar (without logging every frame)
+          animateAvatar(landmarks);
+          
+        // Update UI
+        updateFrameInfo();
+        document.getElementById('frameNumber').value = currentFrame;
+        document.getElementById('status').textContent = `Playing frame ${currentFrame + 1} / ${motionData.frames.length}`;
+        }
+        
+        // Move to next frame
+        currentFrame++;
+        if (currentFrame >= motionData.frames.length) {
+          currentFrame = 0; // Loop
+        }
+        
+        // Calculate frame delay based on FPS and playback speed
+        const fps = motionData.metadata?.fps || 30;
+        const frameDelay = (1000 / fps) / playbackSpeed;
+        
+        // Schedule next frame
+        animationFrame = setTimeout(() => {
+          if (isPlaying) {
+            playAnimation();
+          }
+        }, frameDelay);
+      }
+      
+      function seekTo(value) {
+        if (!motionData) return;
+        currentFrame = parseInt(value);
+        document.getElementById('frameNumber').value = currentFrame;
+        loadFrame();
+      }
+      
+      // Update frame number input
+      document.getElementById('frameNumber').addEventListener('change', (e) => {
+        const frameNum = parseInt(e.target.value);
+        if (motionData && frameNum >= 0 && frameNum < motionData.frames.length) {
+          currentFrame = frameNum;
+          loadFrame();
+        }
+      });
+        
+        // Toggle skeleton
+        function toggleSkeleton() {
+            const visible = document.getElementById('showSkeleton').checked;
+            skeletonRenderer.visible = visible;
+            skeletonRenderer.joints.forEach(j => j.visible = visible);
+            skeletonRenderer.bones.forEach(b => b.visible = visible);
+        }
+        
+        // Toggle avatar
+        function toggleAvatar() {
+            const visible = document.getElementById('showAvatar').checked;
+            if (currentModel) {
+                currentModel.visible = visible;
+            }
+        }
+        
+        // Log function
+        function log(message) {
+            const consoleDiv = document.getElementById('console');
+            consoleDiv.textContent += message + '\n';
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            // Also log to browser console
+            window.console.log(message);
+        }
+        
+        // Copy all bone names
+        function copyBoneNames() {
+            if (!currentModel) {
+                alert('Please load a model first!');
+                return;
+            }
+            
+            const allBones = [];
+            currentModel.traverse((child) => {
+                if (child.isBone || child.type === 'Bone') {
+                    allBones.push(child.name);
+                }
+            });
+            
+            const boneList = allBones.join('\n');
+            navigator.clipboard.writeText(boneList).then(() => {
+                log(`\n✅ Copied ${allBones.length} bone names to clipboard!`);
+                alert(`Copied ${allBones.length} bone names to clipboard!\n\nPaste them somewhere to see the list.`);
+            }).catch(err => {
+                log(`\n❌ Failed to copy: ${err}`);
+                // Fallback: show in console
+                console.log('All bone names:', allBones);
+                alert('Failed to copy. Check browser console (F12) for bone names.');
+            });
+        }
+        
+        // Initialize
+        initScene();
+        log('✅ Scene initialized');
+        log('📋 Load motion data and model, then click "Load Frame"');
+    </script>
+</body>
+</html>
+
