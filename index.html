@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dance Motion Capture - 3D Avatar Animation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            overflow: hidden;
+        }
+        
+        #container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+        
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            min-width: 300px;
+            max-width: 400px;
+            z-index: 100;
+        }
+        
+        h1 {
+            font-size: 20px;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type="range"] {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            outline: none;
+        }
+        
+        .slider-value {
+            min-width: 50px;
+            text-align: right;
+            font-weight: 600;
+            color: #667eea;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        
+        #status {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #333;
+        }
+        
+        .info {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #666;
+            max-width: 300px;
+        }
+        
+        .info h3 {
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 14px;
+        }
+        
+        .info ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .info li {
+            padding: 3px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="canvas-container"></div>
+        
+        <div id="controls">
+            <h1>🕺 Dance Motion Capture</h1>
+            
+            <div class="control-group">
+                <label for="videoFile">Upload Dance Video:</label>
+                <input type="file" id="videoFile" accept="video/*">
+                <button id="processBtn" disabled style="margin-top: 10px;">🎬 Extract Motion</button>
+            </div>
+            
+            <div class="control-group">
+                <label for="motionFile">Or Load Motion Data (JSON):</label>
+                <input type="file" id="motionFile" accept=".json">
+            </div>
+            
+            <div class="control-group">
+                <button id="playBtn" disabled>▶ Play Animation</button>
+            </div>
+            
+            <div class="control-group">
+                <label>Playback Speed: <span class="slider-value" id="speedValue">1.0x</span></label>
+                <div class="slider-container">
+                    <input type="range" id="speedSlider" min="0.1" max="3" step="0.1" value="1">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <label>Animation Progress:</label>
+                <div class="slider-container">
+                    <input type="range" id="progressSlider" min="0" max="100" value="0">
+                    <span class="slider-value" id="progressValue">0%</span>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="showSkeleton" checked>
+                    <label for="showSkeleton" style="margin: 0;">Show Skeleton</label>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="showAvatar" checked>
+                    <label for="showAvatar" style="margin: 0;">Show KalidoKit Avatar</label>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="loopAnimation" checked>
+                    <label for="loopAnimation" style="margin: 0;">Loop Animation</label>
+                </div>
+            </div>
+            
+            <div id="status">
+                Ready to upload video or load motion data...
+            </div>
+            
+            <div id="processing" style="display: none; margin-top: 15px; padding: 10px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107;">
+                <div style="font-weight: 600; margin-bottom: 5px;">⏳ Processing Video...</div>
+                <div id="processingStatus" style="font-size: 12px;">Initializing...</div>
+                <div style="margin-top: 8px; background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden;">
+                    <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); transition: width 0.3s;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="info">
+            <h3>Controls</h3>
+            <ul>
+                <li>🖱️ <strong>Left Click + Drag:</strong> Rotate camera</li>
+                <li>🖱️ <strong>Right Click + Drag:</strong> Pan camera</li>
+                <li>🖱️ <strong>Scroll:</strong> Zoom in/out</li>
+                <li>⌨️ <strong>Space:</strong> Play/Pause</li>
+            </ul>
+        </div>
+    </div>
+    
+    <!-- Load KalidoKit before importmap -->
+    <script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1/dist/kalidokit.umd.js"></script>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.159.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.159.0/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

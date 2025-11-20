@@ -1,0 +1,12 @@
+{
+  "name": "dance-motion-capture",
+  "version": "1.0.0",
+  "description": "Dance motion capture with MediaPipe and Three.js",
+  "main": "index.html",
+  "scripts": {
+    "start": "python -m http.server 8000"
+  },
+  "dependencies": {
+    "three": "^0.159.0"
+  }
+}
