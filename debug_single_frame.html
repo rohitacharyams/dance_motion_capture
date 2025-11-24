@@ -218,67 +218,96 @@
         function createSkeletonRenderer() {
             skeletonRenderer = {
                 joints: [],
-                bones: [],
+                lineSegments: null,
                 visible: true,
                 offset: new THREE.Vector3(-1.5, 0, 0)
             };
             
-            // Create joints
+            // Create joints (spheres) - hidden by default, only for reference
             const jointGeometry = new THREE.SphereGeometry(0.05, 16, 16);
             const jointMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff88, emissive: 0x00ff88 });
             
             for (let i = 0; i < 33; i++) {
                 const joint = new THREE.Mesh(jointGeometry, jointMaterial);
-                joint.visible = false;
+                joint.visible = false; // Joints hidden by default
                 scene.add(joint);
                 skeletonRenderer.joints.push(joint);
             }
             
-            // Create bones
-            const boneMaterial = new THREE.MeshStandardMaterial({ color: 0x00ffff });
-            POSE_CONNECTIONS.forEach(() => {
-                const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1, 8), boneMaterial);
-                bone.visible = false;
-                scene.add(bone);
-                skeletonRenderer.bones.push(bone);
+            // Create LineSegments for skeleton connections (traditional MediaPipe skeleton look)
+            const lineGeometry = new THREE.BufferGeometry();
+            const positions = new Float32Array(POSE_CONNECTIONS.length * 6); // 2 points per connection, 3 coords each
+            lineGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            
+            const lineMaterial = new THREE.LineBasicMaterial({ 
+                color: 0x00ffff,
+                linewidth: 2
             });
+            
+            skeletonRenderer.lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
+            skeletonRenderer.lineSegments.visible = true;
+            scene.add(skeletonRenderer.lineSegments);
         }
         
         // Update skeleton
         function updateSkeleton(landmarks) {
             if (!skeletonRenderer || !landmarks) return;
             
-            // Update joints
+            // Store joint positions (for LineSegments)
+            const jointPositions = [];
+            
+            // Update joints (hidden, but we track positions for lines)
             landmarks.forEach((lm, i) => {
                 if (i < skeletonRenderer.joints.length && lm.visibility > 0.5) {
-                    const joint = skeletonRenderer.joints[i];
-                    joint.position.set(
+                    const position = new THREE.Vector3(
                         lm.x + skeletonRenderer.offset.x,
                         -lm.y + skeletonRenderer.offset.y,  // Flip Y
                         -lm.z + skeletonRenderer.offset.z   // Flip Z
                     );
-                    joint.visible = skeletonRenderer.visible;
+                    
+                    const joint = skeletonRenderer.joints[i];
+                    joint.position.copy(position);
+                    joint.visible = false; // Always hide joints, only show lines
+                    
+                    jointPositions[i] = position;
+                } else {
+                    jointPositions[i] = null;
                 }
             });
             
-            // Update bones
-            POSE_CONNECTIONS.forEach(([i1, i2], idx) => {
-                if (idx < skeletonRenderer.bones.length) {
-                    const bone = skeletonRenderer.bones[idx];
-                    const j1 = skeletonRenderer.joints[i1];
-                    const j2 = skeletonRenderer.joints[i2];
+            // Update LineSegments (bones) - only show lines, not joints
+            if (skeletonRenderer.lineSegments) {
+                const positions = skeletonRenderer.lineSegments.geometry.attributes.position.array;
+                let posIdx = 0;
+                
+                POSE_CONNECTIONS.forEach(([i1, i2]) => {
+                    const p1 = jointPositions[i1];
+                    const p2 = jointPositions[i2];
                     
-                    if (j1.visible && j2.visible) {
-                        const mid = new THREE.Vector3().addVectors(j1.position, j2.position).multiplyScalar(0.5);
-                        bone.position.copy(mid);
-                        bone.lookAt(j2.position);
-                        bone.scale.y = j1.position.distanceTo(j2.position);
-                        bone.visible = skeletonRenderer.visible;
+                    if (p1 && p2) {
+                        // Set start point
+                        positions[posIdx++] = p1.x;
+                        positions[posIdx++] = p1.y;
+                        positions[posIdx++] = p1.z;
+                        // Set end point
+                        positions[posIdx++] = p2.x;
+                        positions[posIdx++] = p2.y;
+                        positions[posIdx++] = p2.z;
                     } else {
-                        bone.visible = false;
+                        // Hide this line by setting both points to same position
+                        const hiddenPos = p1 || p2 || new THREE.Vector3(0, -100, 0);
+                        positions[posIdx++] = hiddenPos.x;
+                        positions[posIdx++] = hiddenPos.y;
+                        positions[posIdx++] = hiddenPos.z;
+                        positions[posIdx++] = hiddenPos.x;
+                        positions[posIdx++] = hiddenPos.y;
+                        positions[posIdx++] = hiddenPos.z;
                     }
-                }
-            });
+                });
+                
+                skeletonRenderer.lineSegments.geometry.attributes.position.needsUpdate = true;
+                skeletonRenderer.lineSegments.visible = skeletonRenderer.visible;
+            }
         }
         
         // Load motion data
@@ -354,10 +383,10 @@
                 'Neck': ['neck', 'Neck', 'mixamorig:Neck'],
                 'Head': ['head', 'Head', 'mixamorig:Head'],
                 'LeftUpperArm': ['leftupperarm', 'LeftUpperArm', 'left_upper_arm', 'Left_Upper_Arm', 'mixamorig:LeftArm', 'leftarm', 'LeftArm', 'left_arm', 'Left_Arm', 'l_upperarm', 'L_UpperArm', 'upperarm_l', 'UpperArm_L', 'left_shoulder', 'Left_shoulder'],
-                'LeftLowerArm': ['leftlowerarm', 'LeftLowerArm', 'left_lower_arm', 'Left_Lower_Arm', 'mixamorig:LeftForeArm', 'leftforearm', 'LeftForeArm', 'left_forearm', 'Left_ForeArm', 'l_forearm', 'L_ForeArm', 'lowerarm_l', 'LowerArm_L', 'left_elbow', 'Left_elbow'],
+                'LeftLowerArm': ['leftlowerarm', 'LeftLowerArm', 'left_lower_arm', 'Left_Lower_Arm', 'mixamorig:LeftForeArm', 'leftforearm', 'LeftForeArm', 'left_forearm', 'Left_ForeArm', 'l_forearm', 'L_ForeArm', 'lowerarm_l', 'LowerArm_L', 'left_elbow', 'Left_elbow', 'J_Bip_L_ForeArm', 'J_Bip_L_Forearm', 'Bip_L_ForeArm', 'Bip_L_Forearm'],
                 'LeftHand': ['lefthand', 'LeftHand', 'left_hand', 'Left_Hand', 'mixamorig:LeftHand', 'l_hand', 'L_Hand', 'hand_l', 'Hand_L', 'left_wrist', 'Left_wrist'],
                 'RightUpperArm': ['rightupperarm', 'RightUpperArm', 'right_upper_arm', 'Right_Upper_Arm', 'mixamorig:RightArm', 'rightarm', 'RightArm', 'right_arm', 'Right_Arm', 'r_upperarm', 'R_UpperArm', 'upperarm_r', 'UpperArm_R', 'right_shoulder', 'Right_shoulder'],
-                'RightLowerArm': ['rightlowerarm', 'RightLowerArm', 'right_lower_arm', 'Right_Lower_Arm', 'mixamorig:RightForeArm', 'rightforearm', 'RightForeArm', 'right_forearm', 'Right_ForeArm', 'r_forearm', 'R_ForeArm', 'lowerarm_r', 'LowerArm_R', 'right_elbow', 'Right_elbow'],
+                'RightLowerArm': ['rightlowerarm', 'RightLowerArm', 'right_lower_arm', 'Right_Lower_Arm', 'mixamorig:RightForeArm', 'rightforearm', 'RightForeArm', 'right_forearm', 'Right_ForeArm', 'r_forearm', 'R_ForeArm', 'lowerarm_r', 'LowerArm_R', 'right_elbow', 'Right_elbow', 'J_Bip_R_ForeArm', 'J_Bip_R_Forearm', 'Bip_R_ForeArm', 'Bip_R_Forearm'],
                 'RightHand': ['righthand', 'RightHand', 'right_hand', 'Right_Hand', 'mixamorig:RightHand', 'r_hand', 'R_Hand', 'hand_r', 'Hand_R', 'right_wrist', 'Right_wrist'],
                 // YOUR MODEL USES: Left_leg (upper leg), Left_knee (lower leg), Left_ankle (foot)
                 'LeftUpperLeg': ['leftupperleg', 'LeftUpperLeg', 'left_upper_leg', 'Left_Upper_Leg', 'mixamorig:LeftUpLeg', 'leftupleg', 'LeftUpLeg', 'left_upleg', 'Left_UpLeg', 'l_upperleg', 'L_UpperLeg', 'thigh_l', 'Thigh_L', 'thighl', 'ThighL', 'left_leg', 'Left_leg'],
@@ -427,16 +456,40 @@
                 'Left_elbow': 'LeftLowerArm',
                 'Left_wrist': 'LeftHand',
                 'Right_elbow': 'RightLowerArm',
-                'Right_wrist': 'RightHand'
+                'Right_wrist': 'RightHand',
+                // Japanese bone naming patterns
+                'J_Bip_L_ForeArm': 'LeftLowerArm',
+                'J_Bip_L_Forearm': 'LeftLowerArm',
+                'Bip_L_ForeArm': 'LeftLowerArm',
+                'Bip_L_Forearm': 'LeftLowerArm',
+                'J_Bip_R_ForeArm': 'RightLowerArm',
+                'J_Bip_R_Forearm': 'RightLowerArm',
+                'Bip_R_ForeArm': 'RightLowerArm',
+                'Bip_R_Forearm': 'RightLowerArm'
             };
             
-            // Apply direct mappings first
+            // Apply direct mappings first (exact match)
             for (const bone of allBones) {
                 if (directMappings[bone.name]) {
                     const kalidoName = directMappings[bone.name];
                     if (!boneMappings[kalidoName]) {
                         boneMappings[kalidoName] = bone;
                         log(`✅ Mapped ${kalidoName} -> ${bone.name} (direct mapping)`);
+                    }
+                }
+            }
+            
+            // Apply direct mappings with case-insensitive match
+            for (const bone of allBones) {
+                const boneNameLower = bone.name.toLowerCase();
+                for (const [directName, kalidoName] of Object.entries(directMappings)) {
+                    if (boneNameLower === directName.toLowerCase() && !boneMappings[kalidoName]) {
+                        // Double-check this bone isn't already mapped
+                        const alreadyMapped = Object.values(boneMappings).includes(bone);
+                        if (!alreadyMapped) {
+                            boneMappings[kalidoName] = bone;
+                            log(`✅ Mapped ${kalidoName} -> ${bone.name} (direct mapping, case-insensitive)`);
+                        }
                     }
                 }
             }
@@ -511,8 +564,120 @@
                     }
                 }
                 
+                // Special handling for Japanese bone naming patterns (J_Bip_* or Bip_*)
+                if (!found && (kalidoName === 'LeftLowerArm' || kalidoName === 'RightLowerArm')) {
+                    const side = kalidoName.includes('Left') ? 'L' : 'R';
+                    const sideLower = side.toLowerCase();
+                    const sideFull = kalidoName.includes('Left') ? 'left' : 'right';
+                    const sideFullCap = kalidoName.includes('Left') ? 'Left' : 'Right';
+                    
+                    const japanesePatterns = [
+                        `J_Bip_${side}_ForeArm`,
+                        `J_Bip_${side}_Forearm`,
+                        `Bip_${side}_ForeArm`,
+                        `Bip_${side}_Forearm`,
+                        `j_bip_${sideLower}_forearm`,
+                        `bip_${sideLower}_forearm`
+                    ];
+                    
+                    for (const bone of allBones) {
+                        const alreadyMapped = Object.values(boneMappings).includes(bone);
+                        if (alreadyMapped) continue;
+                        
+                        const boneName = bone.name;
+                        for (const pattern of japanesePatterns) {
+                            if (boneName === pattern || boneName.toLowerCase() === pattern.toLowerCase()) {
+                                boneMappings[kalidoName] = bone;
+                                log(`✅ Mapped ${kalidoName} -> ${bone.name} (Japanese pattern match)`);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) break;
+                    }
+                    
+                    // Aggressive fallback: look for any bone containing elbow/forearm/lowerarm keywords
+                    if (!found) {
+                        const keywords = ['elbow', 'forearm', 'lowerarm', 'fore_arm', 'lower_arm'];
+                        for (const bone of allBones) {
+                            const alreadyMapped = Object.values(boneMappings).includes(bone);
+                            if (alreadyMapped) continue;
+                            
+                            // Skip if this bone is already mapped to something else
+                            const alreadyMappedTo = Object.keys(boneMappings).find(k => boneMappings[k] === bone);
+                            if (alreadyMappedTo && alreadyMappedTo !== kalidoName) continue;
+                            
+                            const boneNameLower = bone.name.toLowerCase();
+                            // Check if bone name contains side indicator AND lower arm keyword
+                            const hasSide = boneNameLower.includes(sideFull) || boneNameLower.includes(sideLower) || 
+                                          boneNameLower.includes(sideFullCap.toLowerCase());
+                            const hasKeyword = keywords.some(kw => boneNameLower.includes(kw));
+                            
+                            // Also check if it's NOT an upper arm bone
+                            const isNotUpperArm = !boneNameLower.includes('upperarm') && 
+                                                 !boneNameLower.includes('upper_arm') &&
+                                                 !boneNameLower.includes('shoulder');
+                            
+                            if (hasSide && hasKeyword && isNotUpperArm) {
+                                boneMappings[kalidoName] = bone;
+                                log(`✅ Mapped ${kalidoName} -> ${bone.name} (keyword fallback: ${keywords.find(kw => boneNameLower.includes(kw))})`);
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Last resort: if upper arm is mapped to "shoulder", then "arm" might be the lower arm
+                    if (!found) {
+                        const upperArmName = kalidoName === 'LeftLowerArm' ? 'LeftUpperArm' : 'RightUpperArm';
+                        const upperArmBone = boneMappings[upperArmName];
+                        if (upperArmBone && (upperArmBone.name.toLowerCase().includes('shoulder') || 
+                                             upperArmBone.name.toLowerCase().includes('upper'))) {
+                            // Look for a bone named just "arm" (without shoulder/upper)
+                            for (const bone of allBones) {
+                                const alreadyMapped = Object.values(boneMappings).includes(bone);
+                                if (alreadyMapped) continue;
+                                
+                                const boneNameLower = bone.name.toLowerCase();
+                                const hasSide = boneNameLower.includes(sideFull) || 
+                                              boneNameLower.includes(sideFullCap.toLowerCase());
+                                const isJustArm = boneNameLower.includes('arm') && 
+                                                !boneNameLower.includes('shoulder') &&
+                                                !boneNameLower.includes('upper') &&
+                                                !boneNameLower.includes('elbow');
+                                
+                                if (hasSide && isJustArm) {
+                                    boneMappings[kalidoName] = bone;
+                                    log(`✅ Mapped ${kalidoName} -> ${bone.name} (fallback: arm bone)`);
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 if (!found) {
                     log(`❌ NOT FOUND: ${kalidoName}`);
+                    // For lower arms, show available bones that might match
+                    if (kalidoName === 'LeftLowerArm' || kalidoName === 'RightLowerArm') {
+                        const side = kalidoName.includes('Left') ? 'left' : 'right';
+                        const sideCap = kalidoName.includes('Left') ? 'Left' : 'Right';
+                        const potentialMatches = allBones.filter(bone => {
+                            const name = bone.name.toLowerCase();
+                            const alreadyMapped = Object.values(boneMappings).includes(bone);
+                            return !alreadyMapped && (
+                                name.includes(side) || name.includes(sideCap.toLowerCase())
+                            ) && (
+                                name.includes('elbow') || name.includes('forearm') || 
+                                name.includes('lowerarm') || name.includes('fore_arm') ||
+                                name.includes('lower_arm')
+                            );
+                        });
+                        if (potentialMatches.length > 0) {
+                            log(`   💡 Potential matches for ${kalidoName}: ${potentialMatches.map(b => b.name).join(', ')}`);
+                        }
+                    }
                 }
             }
             
@@ -625,14 +790,26 @@
                         log(`❌ RightUpperArm bone not found!`);
                     }
                     
-                    if (boneMappings["RightLowerArm"]) rigRotation("RightLowerArm", riggedPose.RightLowerArm, 1, 0.3);
+                    if (boneMappings["RightLowerArm"]) {
+                        rigRotation("RightLowerArm", riggedPose.RightLowerArm, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied RightLowerArm rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ RightLowerArm bone not found!`);
+                    }
+                    
                     if (boneMappings["LeftUpperArm"]) {
                         rigRotation("LeftUpperArm", riggedPose.LeftUpperArm, 1, 0.3);
                         if (!isPlaying) log(`✅ Applied LeftUpperArm rotation`);
                     } else if (!isPlaying) {
                         log(`❌ LeftUpperArm bone not found!`);
                     }
-                    if (boneMappings["LeftLowerArm"]) rigRotation("LeftLowerArm", riggedPose.LeftLowerArm, 1, 0.3);
+                    
+                    if (boneMappings["LeftLowerArm"]) {
+                        rigRotation("LeftLowerArm", riggedPose.LeftLowerArm, 1, 0.3);
+                        if (!isPlaying) log(`✅ Applied LeftLowerArm rotation`);
+                    } else if (!isPlaying) {
+                        log(`❌ LeftLowerArm bone not found!`);
+                    }
                     
                     if (boneMappings["LeftUpperLeg"]) {
                         rigRotation("LeftUpperLeg", riggedPose.LeftUpperLeg, 1, 0.3);
@@ -824,8 +1001,10 @@
         function toggleSkeleton() {
             const visible = document.getElementById('showSkeleton').checked;
             skeletonRenderer.visible = visible;
-            skeletonRenderer.joints.forEach(j => j.visible = visible);
-            skeletonRenderer.bones.forEach(b => b.visible = visible);
+            // Joints stay hidden, only toggle line segments
+            if (skeletonRenderer.lineSegments) {
+                skeletonRenderer.lineSegments.visible = visible;
+            }
         }
         
         // Toggle avatar
