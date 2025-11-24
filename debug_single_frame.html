@@ -32,6 +32,55 @@
         #canvas-container {
             flex: 1;
             position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        #viewports-container {
+            display: flex;
+            flex: 1;
+            gap: 10px;
+            padding: 10px;
+        }
+        #video-container {
+            flex: 1;
+            position: relative;
+            background: #000;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        #video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        #video-label {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            z-index: 10;
+        }
+        #three-container {
+            flex: 1;
+            position: relative;
+            background: #1a1a2e;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        #three-label {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            z-index: 10;
         }
         #info {
             background: #333;
@@ -97,19 +146,37 @@
             </div>
             
             <div>
-                <label>Load Motion Data:</label>
+                <h3>📹 Video Processing</h3>
+                <label>Upload Video:</label>
+                <input type="file" id="videoFile" accept="video/*,.mp4,.mov,.avi,.webm" />
+                <button id="uploadVideoBtn" onclick="uploadVideo()" style="margin-top: 5px;">Upload & Process Video</button>
+                <div id="processingStatus" style="display: none; margin-top: 10px; padding: 10px; background: #333; border-radius: 5px;">
+                    <div style="margin-bottom: 5px;">
+                        <strong>Status:</strong> <span id="processingStatusText">Processing...</span>
+                    </div>
+                    <div style="width: 100%; background: #222; border-radius: 3px; overflow: hidden;">
+                        <div id="processingProgressBar" style="height: 20px; background: #4a90e2; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <div style="margin-top: 5px; font-size: 11px;" id="processingMessage"></div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #444;">
+                <h3>📄 Or Load Motion Data Directly</h3>
+                <label>Load Motion Data (JSON):</label>
                 <input type="file" id="motionFile" accept=".json" />
             </div>
             
-            <div>
+            <div style="margin-top: 15px;">
+                <h3>🎭 Avatar</h3>
                 <label>Load GLB Model:</label>
                 <input type="file" id="modelFile" accept=".glb,.gltf" />
             </div>
             
             <div>
                 <label>
-                    <input type="checkbox" id="showSkeleton" checked onchange="toggleSkeleton()" />
-                    Show Skeleton
+                    <input type="checkbox" id="showSkeleton" onchange="toggleSkeleton()" />
+                    Show Skeleton (hidden by default)
                 </label>
             </div>
             
@@ -117,6 +184,20 @@
                 <label>
                     <input type="checkbox" id="showAvatar" checked onchange="toggleAvatar()" />
                     Show Avatar
+                </label>
+            </div>
+            
+            <div>
+                <label>
+                    <input type="checkbox" id="showVideo" checked onchange="toggleVideo()" />
+                    Show Original Video
+                </label>
+            </div>
+            
+            <div>
+                <label>
+                    <input type="checkbox" id="syncVideo" checked onchange="toggleSyncVideo()" />
+                    Sync Video with Animation
                 </label>
             </div>
             
@@ -137,7 +218,18 @@
             <div id="console"></div>
         </div>
         
-        <div id="canvas-container"></div>
+        <div id="canvas-container">
+            <div id="viewports-container">
+                <div id="video-container" style="display: none;">
+                    <div id="video-label">📹 Original Video</div>
+                    <video id="originalVideo" controls muted></video>
+                </div>
+                <div id="three-container">
+                    <div id="three-label">🎭 3D Animation</div>
+                    <div id="three-canvas-wrapper"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -153,6 +245,14 @@
         let animationFrame = null;
         let playbackSpeed = 1.0;
         let currentFrame = 0;
+        let processingJobId = null;
+        let processingPollInterval = null;
+        let originalVideoFile = null;
+        let syncVideoEnabled = true; // Default to enabled
+        
+        // Backend API configuration
+        const API_BASE_URL = 'http://localhost:5000'; // Flask server
+        // Alternative: const API_BASE_URL = 'http://localhost:8000/api/avatar-3d'; // FastAPI backend
         
         // MediaPipe Pose connections
         const POSE_CONNECTIONS = [
@@ -171,9 +271,12 @@
             camera.lookAt(0, 1, 0);
             
             renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth - 300, window.innerHeight);
+            const threeContainer = document.getElementById('three-canvas-wrapper');
+            const containerWidth = window.innerWidth - 300;
+            const containerHeight = window.innerHeight;
+            renderer.setSize(containerWidth, containerHeight);
             renderer.shadowMap.enabled = true;
-            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            threeContainer.appendChild(renderer.domElement);
             
             controls = new THREE.OrbitControls(camera, renderer.domElement);
             controls.target.set(0, 1, 0);
@@ -208,10 +311,11 @@
             
             // Handle window resize
             window.addEventListener('resize', () => {
-                camera.aspect = (window.innerWidth - 300) / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth - 300, window.innerHeight);
+                updateViewportSizes();
             });
+            
+            // Initialize viewport sizes
+            updateViewportSizes();
         }
         
         // Create skeleton renderer
@@ -245,7 +349,7 @@
             });
             
             skeletonRenderer.lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
-            skeletonRenderer.lineSegments.visible = true;
+            skeletonRenderer.lineSegments.visible = false; // Hidden by default - only show avatar
             scene.add(skeletonRenderer.lineSegments);
         }
         
@@ -310,6 +414,282 @@
             }
         }
         
+        // Set up video element when file is selected
+        document.getElementById('videoFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            // Set up video element immediately for side-by-side viewing
+            originalVideoFile = file;
+            const videoElement = document.getElementById('originalVideo');
+            const videoUrl = URL.createObjectURL(file);
+            videoElement.src = videoUrl;
+            
+            // Show video container immediately
+            const videoContainer = document.getElementById('video-container');
+            videoContainer.style.display = 'flex';
+            document.getElementById('showVideo').checked = true;
+            
+            log(`✅ Video file selected: ${file.name}`);
+            
+            // Update viewport sizes to show side by side
+            setTimeout(() => {
+                updateViewportSizes();
+            }, 100);
+            
+            // Set up video metadata
+            videoElement.addEventListener('loadedmetadata', () => {
+                log(`✅ Video loaded: ${videoElement.duration.toFixed(2)}s, ${videoElement.videoWidth}x${videoElement.videoHeight}`);
+                updateViewportSizes();
+            }, { once: true });
+        });
+        
+        // Upload and process video
+        async function uploadVideo() {
+            const videoFileInput = document.getElementById('videoFile');
+            const file = videoFileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a video file first!');
+                return;
+            }
+            
+            // Ensure video is set up (in case user didn't wait for file input event)
+            if (!originalVideoFile || document.getElementById('originalVideo').src === '') {
+                originalVideoFile = file;
+                const videoElement = document.getElementById('originalVideo');
+                const videoUrl = URL.createObjectURL(file);
+                videoElement.src = videoUrl;
+                const videoContainer = document.getElementById('video-container');
+                videoContainer.style.display = 'flex';
+                document.getElementById('showVideo').checked = true;
+                updateViewportSizes();
+            }
+            
+            const uploadBtn = document.getElementById('uploadVideoBtn');
+            const statusDiv = document.getElementById('processingStatus');
+            const statusText = document.getElementById('processingStatusText');
+            const progressBar = document.getElementById('processingProgressBar');
+            const messageDiv = document.getElementById('processingMessage');
+            
+            // Show processing UI
+            statusDiv.style.display = 'block';
+            uploadBtn.disabled = true;
+            statusText.textContent = 'Uploading video...';
+            progressBar.style.width = '5%';
+            messageDiv.textContent = 'Uploading video file to server...';
+            
+            try {
+                // Create FormData
+                const formData = new FormData();
+                formData.append('video', file);
+                
+                // Upload video
+                const uploadResponse = await fetch(`${API_BASE_URL}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!uploadResponse.ok) {
+                    const errorData = await uploadResponse.json().catch(() => ({ error: 'Upload failed' }));
+                    throw new Error(errorData.error || 'Failed to upload video');
+                }
+                
+                const uploadData = await uploadResponse.json();
+                log(`✅ Video uploaded: ${file.name}`);
+                statusText.textContent = 'Processing video...';
+                progressBar.style.width = '10%';
+                messageDiv.textContent = 'Extracting pose landmarks with MediaPipe...';
+                
+                // Store filename for later use (Flask server doesn't use job_id)
+                processingJobId = uploadData.filename || uploadData.job_id || file.name;
+                
+                // Start polling for progress
+                pollProcessingStatus();
+                
+            } catch (error) {
+                console.error('Error uploading video:', error);
+                log(`❌ Error: ${error.message}`);
+                statusText.textContent = 'Error';
+                messageDiv.textContent = error.message;
+                uploadBtn.disabled = false;
+            }
+        }
+        
+        // Poll processing status
+        async function pollProcessingStatus() {
+            try {
+                // Try Flask endpoint first (most common), then FastAPI
+                let statusResponse;
+                let status;
+                
+                try {
+                    // Flask server uses /progress endpoint (no job_id needed)
+                    statusResponse = await fetch(`${API_BASE_URL}/progress`);
+                    if (statusResponse.ok) {
+                        status = await statusResponse.json();
+                        log(`📊 Progress: ${status.progress || 0}% - ${status.message || status.status || 'Processing...'}`);
+                    } else {
+                        log(`⚠️ Flask /progress returned ${statusResponse.status}, trying FastAPI...`);
+                        throw new Error(`Flask endpoint returned ${statusResponse.status}`);
+                    }
+                } catch (e) {
+                    log(`⚠️ Flask endpoint error: ${e.message}`);
+                    // Fallback to FastAPI endpoint (requires job_id)
+                    if (processingJobId) {
+                        try {
+                            statusResponse = await fetch(`${API_BASE_URL}/api/avatar-3d/status/${processingJobId}`);
+                            if (statusResponse.ok) {
+                                status = await statusResponse.json();
+                            } else {
+                                throw new Error('FastAPI endpoint failed');
+                            }
+                        } catch (e2) {
+                            throw new Error('Failed to get processing status from any endpoint');
+                        }
+                    } else {
+                        throw new Error('No job ID available for FastAPI endpoint');
+                    }
+                }
+                
+                if (!status) {
+                    throw new Error('Failed to get processing status');
+                }
+                const statusText = document.getElementById('processingStatusText');
+                const progressBar = document.getElementById('processingProgressBar');
+                const messageDiv = document.getElementById('processingMessage');
+                
+                // Update UI
+                statusText.textContent = status.status || 'Processing...';
+                const progress = status.progress || 0;
+                progressBar.style.width = `${progress}%`;
+                messageDiv.textContent = status.message || `Processing... ${progress}%`;
+                
+                // Check if completed
+                if (status.status === 'completed' || status.status === 'done') {
+                    log(`✅ Video processing complete!`);
+                    statusText.textContent = 'Complete!';
+                    progressBar.style.width = '100%';
+                    
+                    // Get the output filename - Flask server uses output_file, or construct from input filename
+                    let outputFile = status.output_file || status.filename;
+                    if (!outputFile && processingJobId) {
+                        // Construct output filename from input video filename
+                        const videoName = processingJobId.replace(/\.[^/.]+$/, ''); // Remove extension
+                        outputFile = `${videoName}_motion.json`;
+                    }
+                    
+                    if (outputFile) {
+                        messageDiv.textContent = `Loading motion data: ${outputFile}`;
+                        // Load the motion data
+                        await loadMotionDataFromServer(outputFile);
+                    } else {
+                        log(`⚠️ No output filename found in status. Status: ${JSON.stringify(status)}`);
+                        messageDiv.textContent = 'Processing complete, but output file not found. Check server output directory.';
+                    }
+                    
+                    // Stop polling
+                    if (processingPollInterval) {
+                        clearInterval(processingPollInterval);
+                        processingPollInterval = null;
+                    }
+                    
+                    document.getElementById('uploadVideoBtn').disabled = false;
+                } else if (status.status === 'error' || status.status === 'failed') {
+                    throw new Error(status.message || 'Processing failed');
+                } else {
+                    // Continue polling
+                    processingPollInterval = setTimeout(pollProcessingStatus, 1000);
+                }
+                
+            } catch (error) {
+                console.error('Error polling status:', error);
+                log(`❌ Error checking status: ${error.message}`);
+                document.getElementById('processingStatusText').textContent = 'Error';
+                document.getElementById('processingMessage').textContent = error.message;
+                document.getElementById('uploadVideoBtn').disabled = false;
+                
+                if (processingPollInterval) {
+                    clearInterval(processingPollInterval);
+                    processingPollInterval = null;
+                }
+            }
+        }
+        
+        // Load motion data from server
+        async function loadMotionDataFromServer(filename) {
+            try {
+                log(`📥 Loading motion data: ${filename}`);
+                
+                // Try Flask endpoints first, then FastAPI, then direct file
+                let dataResponse;
+                let data;
+                
+                try {
+                    // Try Flask output directory first
+                    dataResponse = await fetch(`${API_BASE_URL}/output/${filename}`);
+                    if (dataResponse.ok) {
+                        data = await dataResponse.json();
+                        log(`✅ Loaded from Flask /output/${filename}`);
+                    } else {
+                        throw new Error('Flask /output endpoint failed');
+                    }
+                } catch (e) {
+                    try {
+                        // Try direct file from Flask static
+                        dataResponse = await fetch(`${API_BASE_URL}/${filename}`);
+                        if (dataResponse.ok) {
+                            data = await dataResponse.json();
+                            log(`✅ Loaded from Flask static: ${filename}`);
+                        } else {
+                            throw new Error('Flask static file failed');
+                        }
+                    } catch (e2) {
+                        try {
+                            // Try FastAPI endpoint
+                            dataResponse = await fetch(`${API_BASE_URL}/api/avatar-3d/motion/${filename}`);
+                            if (dataResponse.ok) {
+                                data = await dataResponse.json();
+                                log(`✅ Loaded from FastAPI: ${filename}`);
+                            } else {
+                                throw new Error('FastAPI endpoint failed');
+                            }
+                        } catch (e3) {
+                            throw new Error(`Failed to load motion data. Tried: /output/${filename}, /${filename}, /api/avatar-3d/motion/${filename}`);
+                        }
+                    }
+                }
+                
+                // Handle both FastAPI response format (motion_data) and direct JSON
+                if (data.motion_data) {
+                    motionData = data.motion_data;
+                } else if (data.frames) {
+                    motionData = data;
+                } else {
+                    throw new Error('Invalid motion data format');
+                }
+                
+                log(`✅ Motion data loaded: ${motionData.frames.length} frames`);
+                document.getElementById('status').textContent = `Loaded ${motionData.frames.length} frames`;
+                document.getElementById('playBtn').disabled = false;
+                document.getElementById('frameNumber').max = motionData.frames.length - 1;
+                updateFrameInfo();
+                
+                // Hide processing UI
+                document.getElementById('processingStatus').style.display = 'none';
+                
+                // Auto-load first frame if model is loaded
+                if (currentModel) {
+                    loadFrame();
+                }
+                
+            } catch (error) {
+                console.error('Error loading motion data:', error);
+                log(`❌ Error loading motion data: ${error.message}`);
+                document.getElementById('processingMessage').textContent = `Error: ${error.message}`;
+            }
+        }
+        
         // Load motion data
         document.getElementById('motionFile').addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -353,7 +733,8 @@
                 
                 box.setFromObject(currentModel);
                 const minY = box.min.y;
-                currentModel.position.set(1.5, -minY, 0);
+                // Center the avatar in the middle (x=0)
+                currentModel.position.set(0, -minY, 0);
                 currentModel.rotation.y = Math.PI; // Rotate 180deg
                 
                 scene.add(currentModel);
@@ -895,6 +1276,16 @@
         // Update UI
         updateFrameInfo();
         document.getElementById('status').textContent = `Frame ${currentFrame} loaded`;
+        
+        // Sync video to current frame if video is loaded and sync is enabled
+        if (syncVideoEnabled && motionData) {
+          const videoElement = document.getElementById('originalVideo');
+          if (videoElement && videoElement.src) {
+            const fps = motionData.metadata?.fps || 30;
+            const targetTime = currentFrame / fps;
+            videoElement.currentTime = targetTime;
+          }
+        }
       }
       
       function updateFrameInfo() {
@@ -925,6 +1316,16 @@
         
         isPlaying = !isPlaying;
         document.getElementById('playBtn').textContent = isPlaying ? '⏸ Pause' : '▶ Play Animation';
+        
+        // Sync video playback
+        const videoElement = document.getElementById('originalVideo');
+        if (videoElement && videoElement.src && syncVideoEnabled) {
+          if (isPlaying) {
+            videoElement.play().catch(e => console.log('Video play error:', e));
+          } else {
+            videoElement.pause();
+          }
+        }
         
         if (isPlaying) {
           document.getElementById('status').textContent = 'Playing animation...';
@@ -1000,10 +1401,12 @@
         // Toggle skeleton
         function toggleSkeleton() {
             const visible = document.getElementById('showSkeleton').checked;
-            skeletonRenderer.visible = visible;
-            // Joints stay hidden, only toggle line segments
-            if (skeletonRenderer.lineSegments) {
-                skeletonRenderer.lineSegments.visible = visible;
+            if (skeletonRenderer) {
+                skeletonRenderer.visible = visible;
+                // Joints stay hidden, only toggle line segments
+                if (skeletonRenderer.lineSegments) {
+                    skeletonRenderer.lineSegments.visible = visible;
+                }
             }
         }
         
@@ -1012,6 +1415,55 @@
             const visible = document.getElementById('showAvatar').checked;
             if (currentModel) {
                 currentModel.visible = visible;
+            }
+        }
+        
+        // Toggle video
+        function toggleVideo() {
+            const visible = document.getElementById('showVideo').checked;
+            const videoContainer = document.getElementById('video-container');
+            if (visible && originalVideoFile) {
+                videoContainer.style.display = 'flex';
+            } else {
+                videoContainer.style.display = 'none';
+            }
+            updateViewportSizes();
+        }
+        
+        // Toggle video sync
+        function toggleSyncVideo() {
+            syncVideoEnabled = document.getElementById('syncVideo').checked;
+        }
+        
+        // Update viewport sizes
+        function updateViewportSizes() {
+            const videoContainer = document.getElementById('video-container');
+            const threeContainer = document.getElementById('three-container');
+            const showVideo = videoContainer && videoContainer.style.display !== 'none' && originalVideoFile;
+            
+            const availableWidth = window.innerWidth - 300;
+            const availableHeight = window.innerHeight;
+            
+            if (showVideo && videoContainer) {
+                const eachWidth = (availableWidth - 20) / 2; // 10px gap on each side
+                videoContainer.style.width = eachWidth + 'px';
+                videoContainer.style.height = availableHeight + 'px';
+                threeContainer.style.width = eachWidth + 'px';
+                threeContainer.style.height = availableHeight + 'px';
+                if (renderer) {
+                    renderer.setSize(eachWidth, availableHeight);
+                }
+            } else {
+                threeContainer.style.width = availableWidth + 'px';
+                threeContainer.style.height = availableHeight + 'px';
+                if (renderer) {
+                    renderer.setSize(availableWidth, availableHeight);
+                }
+            }
+            
+            if (camera && renderer) {
+                camera.aspect = renderer.domElement.clientWidth / renderer.domElement.clientHeight;
+                camera.updateProjectionMatrix();
             }
         }
         
